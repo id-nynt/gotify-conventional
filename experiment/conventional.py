@@ -46,6 +46,10 @@ class Conventional:
             if time.monotonic() >= deadline: return False
             passed = self.op('probe', environment, release)
             observation = self.last_receipt.get('observation', {})
+            # With automatic restart disabled, a positively identified stopped
+            # container needs a recovery action; waiting cannot repair it.
+            if observation.get('data_status') == 'fresh' and self.last_receipt.get('identity', {}).get('running') is False:
+                return False
             passed = passed and observation.get('data_status') == 'fresh' and observation.get('health') == 'healthy' \
                 and observation.get('error_rate', 1) <= self.policy['error_rate_high_gt'] \
                 and observation.get('latency_p95_ms', float('inf')) <= self.policy['latency_p95_ms_high_gt']

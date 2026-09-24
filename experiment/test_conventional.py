@@ -69,5 +69,14 @@ class RulesTest(unittest.TestCase):
             with patch.object(controller, 'op', return_value=True), patch('conventional.time.sleep'):
                 self.assertFalse(controller.window('v2', float('inf')))
 
+    def test_known_stopped_container_goes_directly_to_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Conventional(argparse.Namespace(runtime=directory, trial='unit', manifest='unused'))
+            controller.last_receipt = {'identity': {'running': False}, 'observation': {'data_status': 'fresh', 'health': 'unhealthy'}}
+            with patch.object(controller, 'op', return_value=False) as operation, patch('conventional.time.sleep') as sleep:
+                self.assertFalse(controller.window('v2', float('inf')))
+                operation.assert_called_once()
+                sleep.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()
