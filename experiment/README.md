@@ -16,6 +16,7 @@ Deployment calls also require `--environment staging|production` and
 | probe | Verify container/image/trial, health, version, exact message, baseline sentinel and dashboard/reload |
 | observe | One fresh identity, health, version, message and persistence sample; no retry or recovery |
 | deploy | Deploy the selected immutable image after the environment's baseline has passed a full probe |
+| diagnose | Report exact container/execution identity, running state and read-only SQLite integrity |
 | restart | Restart the identified container once; the controller must request verification afterwards |
 | rollback | Restore the verified v1 image and unchanged Compose configuration, retaining the same data directory |
 | evidence | Inventory the public evidence files |
@@ -33,6 +34,15 @@ loopback Gotify HTTP endpoints. It records UTC timestamps, HTTP status/duration,
 actual and expected image identities, content checks and observation results in
 JSON receipts. Observation calls sample on demand; the controller chooses the
 interval and limits. These are probe results, not production workload metrics.
+Each probe includes request count/failures, error fraction and p95 request time.
+Both controllers use full `probe` observations, including the dashboard. The
+deployment execution ID ties observations and repair receipts to one deployment.
+
+`boundary.py` optionally waits at production v2, after deployment identity is
+verified and before the first controller observation. An external harness must
+register the exact trial before deployment and acknowledge it within 60 seconds.
+The boundary does not know the scenario or choose recovery. Unarmed deployments
+continue immediately. Healthy and stopped-candidate pilots use the same boundary.
 
 The local rehearsal uses the same Gotify source for both releases, distinguished
 by `experiment-v1` and `experiment-v2` metadata. It tests deployment/recovery

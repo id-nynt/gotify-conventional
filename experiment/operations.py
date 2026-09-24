@@ -17,6 +17,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from boundary import rendezvous
 
 HERE = Path(__file__).resolve().parent
 PORTS = {'conventional': {'staging': 8101, 'production': 8100},
@@ -131,6 +132,8 @@ class Operations:
         state['release'] = release
         self.save()
         self.identity()
+        if not baseline and self.args.operation == 'deploy' and self.args.environment == 'production' and release == 'v2':
+            rendezvous(self.root, self.owner, self.receipt)
 
     def identity(self):
         stage = self.args.environment
