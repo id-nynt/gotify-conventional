@@ -40,46 +40,52 @@ class Conventional:
         for attempt in range(self.policy['observation_attempts']):
             if time.monotonic() >= deadline: return False
             passed = self.op('observe', 'production', release)
+            if time.monotonic() > deadline: return False
             healthy = healthy + 1 if passed else 0
             if healthy >= self.policy['healthy_observations']:
-                return self.op('probe', 'production', release)
+                verified = self.op('probe', 'production', release)
+                return verified and time.monotonic() <= deadline
             if attempt + 1 < self.policy['observation_attempts']:
                 time.sleep(min(self.policy['observation_interval_seconds'], max(0, deadline-time.monotonic())))
         return False
 
     def run(self):
-        outcome = 'failed'
         try:
-            if not self.op('prepare', extra=['--manifest', self.args.manifest]): return 1
-            self.prepared = True
-            for environment in ('staging', 'production'):
-                if not self.op('reset', environment, 'v1') or not self.op('probe', environment, 'v1'):
-                    return 1
-            if not self.op('deploy', 'staging') or not self.op('probe', 'staging'):
-                self.decision('stop', reason='staging_gate_failed')
-                return 1
-            deployed = self.op('deploy', 'production')
-            deadline = time.monotonic() + self.policy['recovery_timeout_seconds']
-            if deployed and self.window('v2', deadline):
-                outcome = 'achieved'
-                return 0
-            for attempt in range(self.policy['restart_attempts']):
-                if time.monotonic() >= deadline: break
-                if self.op('restart', 'production') and self.window('v2', deadline):
-                    outcome = 'achieved'
-                    return 0
-            for attempt in range(self.policy['rollback_attempts']):
-                if time.monotonic() >= deadline: break
-                if self.op('rollback', 'production', 'v1') and self.window('v1', deadline):
-                    outcome = 'restored'
-                    return 2  # Service restored, but the candidate release did not succeed.
-            self.decision('stop', reason='recovery_exhausted')
+            code = self.release()
+        except Exception as error:
+            # Unexpected/uncertain execution must retain the reservation for review.
+            self.decision('stop', reason='controller_exception_reservation_retained', error_type=type(error).__name__)
             return 1
-        finally:
-            if self.prepared:
-                self.decision('terminal', outcome=outcome)
-                self.op('evidence')
-                self.op('finish', extra=['--outcome', outcome])
+        if self.prepared:
+            outcome = {0: 'achieved', 2: 'restored'}.get(code, 'failed')
+            self.decision('terminal', outcome=outcome)
+            if not self.op('evidence'):
+                self.decision('stop', reason='evidence_collection_failed_reservation_retained')
+                return 1
+            if not self.op('finish', extra=['--outcome', outcome]): return 1
+        return code
+
+    def release(self):
+        if not self.op('prepare', extra=['--manifest', self.args.manifest]): return 1
+        self.prepared = True
+        for environment in ('staging', 'production'):
+            if not self.op('reset', environment, 'v1') or not self.op('probe', environment, 'v1'):
+                return 1
+        if not self.op('deploy', 'staging') or not self.op('probe', 'staging'):
+            self.decision('stop', reason='staging_gate_failed')
+            return 1
+        deployed = self.op('deploy', 'production')
+        deadline = time.monotonic() + self.policy['recovery_timeout_seconds']
+        if deployed and self.window('v2', deadline): return 0
+        for attempt in range(self.policy['restart_attempts']):
+            if time.monotonic() >= deadline: break
+            if self.op('restart', 'production') and self.window('v2', deadline): return 0
+        for attempt in range(self.policy['rollback_attempts']):
+            if time.monotonic() >= deadline: break
+            if self.op('rollback', 'production', 'v1') and self.window('v1', deadline):
+                return 2  # Restored service is distinct from a successful candidate.
+        self.decision('stop', reason='recovery_exhausted')
+        return 1
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)

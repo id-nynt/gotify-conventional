@@ -51,5 +51,10 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(sum(action == 'restart' for action, _, _ in calls), 1)
         self.assertEqual(sum(action == 'rollback' for action, _, _ in calls), 1)
 
+    def test_evidence_failure_prevents_success_and_retains_reservation(self):
+        result, calls = self.run_rules(('evidence', None, 'v2'))
+        self.assertEqual(result, 1)
+        self.assertFalse(any(action == 'finish' for action, _, _ in calls))
+
 if __name__ == '__main__':
     unittest.main()
