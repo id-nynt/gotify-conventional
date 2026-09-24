@@ -3,6 +3,8 @@
   "observation_interval_seconds": 5,
   "observation_timeout_seconds": 45,
   "healthy_observations": 2,
+  "error_rate_high_gt": 0.05,
+  "latency_p95_ms_high_gt": 500,
   "restart_attempts": 1,
   "rollback_attempts": 1,
   "recovery_timeout_seconds": 180

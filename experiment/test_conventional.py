@@ -12,9 +12,14 @@ class RulesTest(unittest.TestCase):
             calls = []
             def operation(action, environment=None, release='v2', extra=()):
                 calls.append((action, environment, release))
+                if action == 'diagnose':
+                    controller.last_receipt = {'repair_evidence': {'before': {'app_state': 'stopped', 'dependency_ready': True}}}
                 return (action, environment, release) != failure
+            production_windows = iter(windows)
+            def window(release, deadline, environment='production'):
+                return operation('probe', 'staging', release) if environment == 'staging' else next(production_windows)
             with patch.object(controller, 'op', side_effect=operation), patch.object(controller, 'decision'), \
-                 patch.object(controller, 'window', side_effect=windows):
+                 patch.object(controller, 'window', side_effect=window):
                 result = controller.run()
             return result, calls
 
@@ -55,6 +60,14 @@ class RulesTest(unittest.TestCase):
         result, calls = self.run_rules(('evidence', None, 'v2'))
         self.assertEqual(result, 1)
         self.assertFalse(any(action == 'finish' for action, _, _ in calls))
+
+    def test_http_success_does_not_override_latency_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Conventional(argparse.Namespace(runtime=directory, trial='unit', manifest='unused'))
+            controller.last_receipt = {'observation': {'health': 'healthy', 'data_status': 'fresh',
+                                                      'error_rate': 0, 'latency_p95_ms': 501}}
+            with patch.object(controller, 'op', return_value=True), patch('conventional.time.sleep'):
+                self.assertFalse(controller.window('v2', float('inf')))
 
 if __name__ == '__main__':
     unittest.main()

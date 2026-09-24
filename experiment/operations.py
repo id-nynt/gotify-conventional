@@ -6,10 +6,12 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
 import time
@@ -109,6 +111,7 @@ class Operations:
             'GOTIFY_DATA_DIR': str(directory / 'data'),
             'GOTIFY_ADMIN_PASSWORD_FILE': str(directory / 'admin-password'),
             'GOTIFY_RELEASE_SHA': self.state['manifest']['source_sha'], 'GOTIFY_TRIAL_ID': self.args.trial}
+        env['GOTIFY_EXECUTION_ID'] = self.context().get('execution_id', 'unassigned')
         project = 'gotify-' + self.args.approach + '-' + stage
         return self.command(['docker', 'compose', '-f', str(HERE / 'compose.yaml'), '-p', project] + action, env)
 
@@ -122,6 +125,8 @@ class Operations:
             raise RuntimeError('verified_baseline_required')
         if hashlib.sha256((HERE / 'compose.yaml').read_bytes()).hexdigest() != self.state['compose_sha256']:
             raise RuntimeError('deployment_configuration_changed')
+        state['execution_id'] = self.args.execution_id or self.receipt['operation_id']
+        self.save()
         self.compose(['up', '-d', '--no-build', '--pull', 'never', '--wait', '--wait-timeout', '120'], release)
         state['release'] = release
         self.save()
@@ -136,11 +141,13 @@ class Operations:
         running = self.command(['docker', 'inspect', '--format', '{{.State.Running}}', cid]) == 'true'
         trial = self.command(['docker', 'inspect', '--format', '{{index .Config.Labels "experiment.trial_id"}}', cid])
         restart = self.command(['docker', 'inspect', '--format', '{{.HostConfig.RestartPolicy.Name}}', cid])
+        execution = self.command(['docker', 'inspect', '--format', '{{index .Config.Labels "experiment.execution_id"}}', cid])
         reference = self.state['manifest']['images'][self.args.release]
         expected = self.command(['docker', 'image', 'inspect', '--format', '{{.Id}}', reference])
         self.receipt['identity'] = {'container': cid, 'actual_image': image, 'expected_image': expected,
-                                    'running': running, 'trial': trial, 'restart_policy': restart}
-        if image != expected or trial != self.args.trial or restart != 'no':
+                                    'running': running, 'trial': trial, 'restart_policy': restart, 'execution_id': execution}
+        expected_execution = self.args.execution_id or self.context().get('execution_id')
+        if image != expected or trial != self.args.trial or restart != 'no' or execution != expected_execution:
             raise RuntimeError('runtime_identity_mismatch')
         return running
 
@@ -221,6 +228,21 @@ class Operations:
                                data_status='fresh' if known_failure else 'unavailable', reason=type(error).__name__)
             raise
 
+    def diagnose(self):
+        running = self.identity()
+        database = self.trial / self.args.environment / 'data/gotify.db'
+        database_ready = False
+        if database.is_file():
+            try:
+                with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=4) as connection:
+                    database_ready = connection.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+            except sqlite3.Error:
+                pass
+        identity = self.receipt['identity']
+        return {'deployment_execution_id': identity['execution_id'], 'container_id': identity['container'],
+                'dependency_ready': database_ready, 'dependency_kind': 'sqlite',
+                'app_state': 'running' if running else 'stopped'}
+
     def execute(self):
         operation = self.args.operation
         if self.unresolved.exists() and operation != 'evidence':
@@ -241,9 +263,15 @@ class Operations:
             self.deploy()
         elif operation in ('probe', 'observe'):
             self.probe(dashboard=operation == 'probe')
-        elif operation == 'restart':
-            self.identity()
-            self.compose(['restart', 'gotify'], self.args.release)
+        elif operation in ('diagnose', 'restart'):
+            before = self.diagnose()
+            repair = {'action': operation, 'expected_execution_id': before['deployment_execution_id'],
+                      'before': before, 'status': 'observed'}
+            self.receipt['repair_evidence'] = repair
+            if operation == 'restart':
+                repair['status'] = 'failed'
+                self.compose(['restart', 'gotify'], self.args.release)
+                repair.update(status='executed', after=self.diagnose())
         elif operation == 'evidence':
             self.receipt['files'] = sorted(p.name for p in self.public.iterdir())
         elif operation == 'finish':
@@ -266,6 +294,15 @@ class Operations:
             code = 1
             self.receipt.update(status='FAIL', error_type=type(error).__name__, error=str(error))
         self.receipt['finished_at'] = now()
+        if 'observation' in self.receipt:
+            requests = self.receipt['requests']
+            durations = sorted(r['duration_ms'] for r in requests)
+            failures = sum('error_type' in r or r.get('status', 0) >= 400 for r in requests)
+            self.receipt['observation'].update(
+                request_count=len(requests), request_failures=failures,
+                error_rate=failures / len(requests) if requests else 0,
+                latency_p95_ms=durations[math.ceil(len(durations) * .95)-1] if durations else 0,
+                availability=1 if self.receipt['observation']['health'] == 'healthy' else 0)
         if self.public.exists():
             # Unique operation IDs preserve failures and repeated observations.
             with (self.public / (self.receipt['operation_id'] + '.json')).open('x') as f:
@@ -275,13 +312,14 @@ class Operations:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('operation', choices=['prepare', 'reset', 'deploy', 'probe', 'observe', 'restart', 'rollback', 'evidence', 'finish'])
+    p.add_argument('operation', choices=['prepare', 'reset', 'deploy', 'probe', 'observe', 'diagnose', 'restart', 'rollback', 'evidence', 'finish'])
     p.add_argument('--approach', required=True, choices=PORTS)
     p.add_argument('--trial', required=True)
     p.add_argument('--environment', choices=['staging', 'production'])
     p.add_argument('--release', choices=['v1', 'v2'], default='v2')
     p.add_argument('--runtime', default=str(Path.home() / 'gotify-study-runtime'))
     p.add_argument('--manifest')
+    p.add_argument('--execution-id', help='Expected deployment identity, or new identity for deploy/reset/rollback')
     p.add_argument('--outcome', choices=['achieved', 'restored', 'failed', 'incomplete'])
     args = p.parse_args()
     if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,100}', args.trial):

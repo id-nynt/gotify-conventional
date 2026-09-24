@@ -19,6 +19,7 @@ services:
     volumes:
       - "${GOTIFY_DATA_DIR:?Set an absolute dedicated data directory}:/app/data"
     labels:
+      experiment.execution_id: "${GOTIFY_EXECUTION_ID:-local-foundation}"
       experiment.trial_id: "${GOTIFY_TRIAL_ID:?Set a trial ID}"
       experiment.release_sha: "${GOTIFY_RELEASE_SHA:?Set the source SHA}"
     healthcheck:

@@ -8,7 +8,7 @@ from operations import Operations
 class OperationSafetyTest(unittest.TestCase):
     def operation(self, directory, action='observe'):
         args = argparse.Namespace(runtime=directory, approach='conventional', trial='unit',
-                                  operation=action, environment='production', release='v2')
+                                  operation=action, environment='production', release='v2', execution_id=None)
         op = Operations(args)
         op.state = {'manifest': {'source_sha': 'a'*40}, 'environments': {'production': {
             'password': 'test-only', 'app_token': 'test-only', 'baseline_verified': False,

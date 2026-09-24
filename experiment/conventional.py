@@ -16,6 +16,7 @@ class Conventional:
         self.policy = json.loads((HERE / 'policy.json').read_text())
         self.evidence = Path(args.runtime).expanduser() / 'trials/conventional' / args.trial / 'evidence'
         self.prepared = False
+        self.last_receipt = {}
 
     def decision(self, action, **details):
         record = {'at': dt.datetime.now(dt.timezone.utc).isoformat(), 'controller': 'conventional',
@@ -31,20 +32,27 @@ class Conventional:
                 '--approach', 'conventional', '--trial', self.args.trial,
                 '--runtime', self.args.runtime, '--release', release, *extra]
         if environment: argv.extend(['--environment', environment])
-        result = subprocess.run(argv, timeout=240)
+        result = subprocess.run(argv, timeout=240, text=True, capture_output=True)
+        print(result.stdout, end='', flush=True)
+        if result.stderr: print(result.stderr, end='', file=sys.stderr, flush=True)
+        try: self.last_receipt = json.loads(result.stdout)
+        except ValueError: self.last_receipt = {}
         return result.returncode == 0
 
-    def window(self, release, outer_deadline):
+    def window(self, release, outer_deadline, environment='production'):
         deadline = min(outer_deadline, time.monotonic() + self.policy['observation_timeout_seconds'])
         healthy = 0
         for attempt in range(self.policy['observation_attempts']):
             if time.monotonic() >= deadline: return False
-            passed = self.op('observe', 'production', release)
+            passed = self.op('probe', environment, release)
+            observation = self.last_receipt.get('observation', {})
+            passed = passed and observation.get('data_status') == 'fresh' and observation.get('health') == 'healthy' \
+                and observation.get('error_rate', 1) <= self.policy['error_rate_high_gt'] \
+                and observation.get('latency_p95_ms', float('inf')) <= self.policy['latency_p95_ms_high_gt']
             if time.monotonic() > deadline: return False
             healthy = healthy + 1 if passed else 0
             if healthy >= self.policy['healthy_observations']:
-                verified = self.op('probe', 'production', release)
-                return verified and time.monotonic() <= deadline
+                return True
             if attempt + 1 < self.policy['observation_attempts']:
                 time.sleep(min(self.policy['observation_interval_seconds'], max(0, deadline-time.monotonic())))
         return False
@@ -71,7 +79,7 @@ class Conventional:
         for environment in ('staging', 'production'):
             if not self.op('reset', environment, 'v1') or not self.op('probe', environment, 'v1'):
                 return 1
-        if not self.op('deploy', 'staging') or not self.op('probe', 'staging'):
+        if not self.op('deploy', 'staging') or not self.window('v2', time.monotonic() + self.policy['observation_timeout_seconds'], 'staging'):
             self.decision('stop', reason='staging_gate_failed')
             return 1
         deployed = self.op('deploy', 'production')
@@ -79,6 +87,9 @@ class Conventional:
         if deployed and self.window('v2', deadline): return 0
         for attempt in range(self.policy['restart_attempts']):
             if time.monotonic() >= deadline: break
+            if not self.op('diagnose', 'production'): break
+            diagnosis = self.last_receipt.get('repair_evidence', {}).get('before', {})
+            if diagnosis.get('app_state') != 'stopped' or not diagnosis.get('dependency_ready'): break
             if self.op('restart', 'production') and self.window('v2', deadline): return 0
         for attempt in range(self.policy['rollback_attempts']):
             if time.monotonic() >= deadline: break
