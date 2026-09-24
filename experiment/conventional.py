@@ -87,7 +87,8 @@ class Conventional:
             self.decision('stop', reason='staging_gate_failed')
             return 1
         deployed = self.op('deploy', 'production')
-        deadline = time.monotonic() + self.policy['recovery_timeout_seconds']
+        elapsed = max(0, time.time() - self.last_receipt.get('deployment_ready_at_unix', time.time()))
+        deadline = time.monotonic() + self.policy['recovery_timeout_seconds'] - elapsed
         if deployed and self.window('v2', deadline): return 0
         for attempt in range(self.policy['restart_attempts']):
             if time.monotonic() >= deadline: break

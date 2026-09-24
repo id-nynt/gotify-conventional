@@ -6,6 +6,22 @@ from unittest.mock import patch
 from conventional import Conventional
 
 class RulesTest(unittest.TestCase):
+    def test_delivery_delay_consumes_recovery_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Conventional(argparse.Namespace(runtime=directory, trial='unit', manifest='unused'))
+            calls = []
+            def operation(action, environment=None, release='v2', extra=()):
+                calls.append(action)
+                if action == 'deploy' and environment == 'production':
+                    controller.last_receipt = {'deployment_ready_at_unix': 800}
+                return True
+            with patch.object(controller, 'op', side_effect=operation), patch.object(controller, 'decision'), \
+                    patch('conventional.time.time', return_value=1000), patch('conventional.time.monotonic', return_value=100), \
+                    patch.object(controller, 'window', side_effect=lambda release, deadline, environment='production': deadline > 100):
+                self.assertEqual(controller.run(), 1)
+            self.assertNotIn('restart', calls)
+            self.assertNotIn('rollback', calls)
+
     def run_rules(self, failure=None, windows=(True,)):
         with tempfile.TemporaryDirectory() as directory:
             controller = Conventional(argparse.Namespace(runtime=directory, trial='unit', manifest='unused'))

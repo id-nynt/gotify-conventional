@@ -134,6 +134,10 @@ class Operations:
         self.identity()
         if not baseline and self.args.operation == 'deploy' and self.args.environment == 'production' and release == 'v2':
             rendezvous(self.root, self.owner, self.receipt)
+            self.receipt['deployment_ready_at_unix'] = time.time()
+            write_json(self.public / 'production-boundary.json', {**self.owner,
+                'execution_id': state['execution_id'], 'release': release,
+                'ready_at_unix': self.receipt['deployment_ready_at_unix']})
 
     def identity(self):
         stage = self.args.environment
