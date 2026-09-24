@@ -208,7 +208,8 @@ class Operations:
                     'http://127.0.0.1:' + str(PORTS[self.args.approach][self.args.environment]), payload, str(screenshot)],
                     os.environ | {'GOTIFY_PROBE_USER': 'experiment', 'GOTIFY_PROBE_PASSWORD': state['password']})
                 observation['dashboard'] = True
-            self.identity()
+            if not self.identity():
+                raise RuntimeError('container_stopped_during_probe')
             observation.update(health='healthy', data_status='fresh', functional=True, persistence=True,
                                message_id=sent['id'], message=payload, sentinel_id=state['sentinel']['id'])
             if self.args.release == 'v1' and dashboard:
